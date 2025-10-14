@@ -1,0 +1,13 @@
+build/
+install/
+log/
+.colcon*
+__pycache__/
+*.pyc
+.venv/
+.vscode/
+rosbags/
+*.db3
+.DS_Store
+Thumbs.db
+
