@@ -4,9 +4,6 @@
 Sensors (LiDAR/Camera/IMU) → Perception (ML + Sync + Fusion) → Localization (ORB-SLAM VIO + EKF) → Planning (Global Planner) → Control (Pure Pursuit).
 
 ## Folder Overview
-# AV ROS2 Stack (Jetson Nano)
-
-Pipeline: Sensors (LiDAR/Camera/IMU) → Perception (ML on camera, **Sync LiDAR+IMU**, Fusion) → Localization (ORB-SLAM VIO + EKF) → Planning (global) → Control (Pure Pursuit → MCU/CAN).
 
 ### Quickstart
 ```bash
