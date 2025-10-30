@@ -1,0 +1,16 @@
+<?xml version = "1.0"?>
+<package format = "3">
+<name>perception_sync_node</name>
+<version>0.0.1</version>
+<description>Perception synchronization node (LiDAR + IMU)</description>
+<maintainer email="mart2520@msu.edu"Your Name</maintainer>
+<license>MIT<license>
+<buildtool_depend>ament_cmake</buildtool_depend>
+<exec_depend>rclpy</exec_depend>
+<exec_depend>sensor_msgs</exec_depend>
+<exec_depend>std_msgs</exec_depend>
+<exec_depend>message_filters</exec_depend>
+<export>
+<build_type>ament_python<build_type>
+</export>
+</package>
