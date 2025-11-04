@@ -1,3 +1,5 @@
+#!/usr/bin/env python3
+
 import rclpy
 from rclpy.node import Node
 from sensor_msgs.msg import CameraInfo
@@ -19,7 +21,7 @@ class GroundSpot(Node):
         self.tf_listener = TransformListener(self.tf_buffer, self)        
 
         # Create publisher for ground spot:
-        self.publisher = self.create_publisher(PointStamped, 'ground_point', 1)    
+        self.publisher = self.create_publisher(PointStamped, '/ground_point', 1)    
 
         # Store camera parameters from camera_info topic:
         self.cam_info_lock = Lock()

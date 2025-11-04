@@ -1,88 +1,129 @@
+#!/usr/bin/env python3
+
 import rclpy
 from rclpy.node import Node
-from geometry_msgs.msg import Twist,PointStamped
+from geometry_msgs.msg import PointStamped, Twist
 import math
 import time
-import os
 
 class FollowPurePursuit(Node):
     def __init__(self):
         super().__init__('follow_pure_pursuit')
-
-        #parameters
-        self.linear_velocity = 0.2
-        self.reached_threshold =0.05
-
-        #state
-        self.goal_point = None
+        
+        # Subscribe to ground_point topic
+        self.subscription = self.create_subscription(
+            PointStamped,
+            '/ground_point',
+            self.pure_pursuit_callback,
+            1)
+        
+        # Publisher for cmd_vel
+        self.cmd_vel_publisher = self.create_publisher(Twist, '/cmd_vel', 1)
+        
+        # Tunable parameters
+        self.linear_velocity = 0.45  # m/s - tune this for performance
+        
+        # Track if we've reached the end
+        self.reached_end = False
         self.start_time = None
-        self.finished = False
+        self.end_time = None
+        
+        # Threshold for detecting end of road (no visible lane)
+        self.no_lane_threshold = 0.001  # Small value to detect zeros
+        
+        self.get_logger().info('Pure Pursuit node initialized')
 
-        #publisher and suscriber
-        self.cmd_pub = self.create_publisher(Twist, 
-                                             '/cmd_vel',
-                                             10)
-        self.sub_goal = self.create_subscription(PointStamped,
-                                                 '/ground_point',
-                                                 self.update_goal,
-                                                 10)
-        #timer
-        self.timer = self.create_timer(0.05,
-                                       self.control_loop)
-    def update_goal(self, msg:PointStamped):
-        self.goal_point = msg.point
-        if self.start_time is None:
+    def pure_pursuit_callback(self, msg):
+        '''
+        Callback to implement pure pursuit algorithm
+        '''
+        # Start timer on first valid point
+        if self.start_time is None and not self.is_zero_point(msg.point):
             self.start_time = time.time()
-    def control_loop(self):
-        if self.goal_point is None or self.finished:
+            self.get_logger().info('Started lane following!')
+        
+        # Check if we've reached the end (no visible lane)
+        if self.is_zero_point(msg.point):
+            if not self.reached_end and self.start_time is not None:
+                self.stop_robot()
+                self.reached_end = True
+                self.end_time = time.time()
+                elapsed_time = self.end_time - self.start_time
+                
+                # Print results
+                print("\n" + "="*40)
+                print("LANE FOLLOWING COMPLETE!")
+                print("="*40)
+                print(f"Linear Velocity: {self.linear_velocity}")
+                print(f"Time to complete: {elapsed_time:.2f}")
+                print("="*40 + "\n")
+                
+                self.get_logger().info(f'Completed course in {elapsed_time:.2f} seconds')
             return
-        x = self.goal_point.x
-        y = self.goal_point.y
-
-        #if at ground_point
-        if x == 0.0 and y == 0.0:
-            
-            self.publish_twist(0.0,0.0)
-            if not self.finished and self.start_time is not None:
-                self.finished = True
-                end_time = time.time()
-                time_taken = end_time - self.start_time
-                self.get_logger().info(f'Linear Velocity: {self.linear_velocity:.2f} m/s')
-                self.get_logger().info(f'Time to complete: {time_taken:.2f} s')
-            try:
-                save_dir = os.path.expanduser("~/av/wangnat1_av/lab9_lane/lane_follow")
-                save_path = os.path.join(save_dir,"pp_params.txt")
-                with open(save_path, 'w') as f:
-                    f.write(f'Linear Velocity: {self.linear_velocity:.2f} m/s\n')
-                    f.write(f'Time to complete: {time_taken:.2f} s\n')
-                    f.flush()
-                    os.fsync(f.fileno())
-                    self.get_logger().info("saved pp_params.txt")
-            except Exception as e:
-                self.get_logger().warn(f"failed to write pp_param.txt: {e}")
+        
+        # Don't process if we've already finished
+        if self.reached_end:
             return
-        #compute angle to goal
-        angle_to_goal = math.atan2(y,x)
-
-        dist = math.hypot(x,y)
-        #pure pursuit, 
-        k_angular = 2.0
-        angular_vel = k_angular * angle_to_goal
-        self.publish_twist(self.linear_velocity,angular_vel)
-    
-    def publish_twist(self,linear,angular):
+        
+        # Extract ground point coordinates (in base_footprint frame)
+        x = msg.point.x
+        y = msg.point.y
+        
+        # Pure Pursuit Algorithm:
+        # The lookahead distance is the Euclidean distance to the ground point
+        lookahead_distance = math.sqrt(x**2 + y**2)
+        
+        # Handle case where lookahead distance is very small
+        if lookahead_distance < 0.01:
+            self.stop_robot()
+            return
+        
+        # Pure pursuit formula for curvature:
+        # curvature = 2 * y / lookahead_distance^2
+        # where y is the lateral offset of the goal point
+        curvature = 2.0 * y / (lookahead_distance ** 2)
+        
+        # Angular velocity = linear_velocity * curvature
+        angular_velocity = self.linear_velocity * curvature
+        
+        # Create and publish Twist message
         twist = Twist()
-        twist.linear.x = linear
-        twist.angular.z = angular
-        self.cmd_pub.publish(twist)
+        twist.linear.x = self.linear_velocity
+        twist.angular.z = angular_velocity
+        
+        self.cmd_vel_publisher.publish(twist)
+    
+    def is_zero_point(self, point):
+        '''
+        Check if point is essentially zero (no visible lane)
+        '''
+        return (abs(point.x) < self.no_lane_threshold and 
+                abs(point.y) < self.no_lane_threshold)
+    
+    def stop_robot(self):
+        '''
+        Publish zero velocities to stop the robot
+        '''
+        twist = Twist()
+        twist.linear.x = 0.0
+        twist.angular.z = 0.0
+        self.cmd_vel_publisher.publish(twist)
+
+
 def main(args=None):
     rclpy.init(args=args)
     node = FollowPurePursuit()
-    rclpy.spin(node)
-    node.destroy_node()
-    rclpy.shutdown()
+    
+    try:
+        rclpy.spin(node)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        # Make sure robot stops when node is killed
+        node.stop_robot()
+        node.destroy_node()
+        rclpy.shutdown()
+
 
 if __name__ == '__main__':
-    main()  
-            
-        
+    main()

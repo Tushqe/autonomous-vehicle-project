@@ -13,17 +13,17 @@ setup(
     ],
     install_requires=['setuptools'],
     zip_safe=True,
-    maintainer='wangnat1',
-    maintainer_email='wangnat1@msu.edu',
-    description='TODO: Package description',
+    maintainer='gaidouke',
+    maintainer_email='gaidouke@msu.edu',
+    description='Lab 9',
     license='Apache-2.0',
     tests_require=['pytest'],
     entry_points={
         'console_scripts': [
             'detect = lane_follow.detect:main',
             'follow_pid = lane_follow.follow_pid:main',
-            'follow_pure_pursuit = lane_follow.follow_pure_pursuit:main',
             'ground_spot = lane_follow.ground_spot:main',
+            'follow_pure_pursuit = lane_follow.follow_pure_pursuit:main',
         ],
     },
 )
