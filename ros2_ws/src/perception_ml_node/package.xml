@@ -1,0 +1,16 @@
+<?xml version="1.0"?>
+<package format="3">
+  <name>perception_ml_node</name>
+  <version>0.0.1</version>
+  <description>Offline YOLOPv2 perception demo node</description>
+  <maintainer email="you@example.com">Tushig</maintainer>
+  <license>MIT</license>
+
+  <buildtool_depend>ament_python</buildtool_depend>
+
+  <exec_depend>rclpy</exec_depend>
+  <exec_depend>sensor_msgs</exec_depend>
+  <exec_depend>vision_msgs</exec_depend>
+  <exec_depend>cv_bridge</exec_depend>
+</package>
+
