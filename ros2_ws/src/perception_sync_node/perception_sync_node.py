@@ -10,7 +10,7 @@ class PerceptionSyncNode(Node):
         self.get_logger().info('Perception Sync Node (LiDAR + IMU) Initialized')
 
         self.lidar_sub = Subscriber(self, LaserScan, '/scan')
-        self.imu_sub = Subscriber(self, Imu, '/imu')
+        self.imuz_sub = Subscriber(self, Imu, '/imu')
 
         self.ts = ApproximateTimeSynchronizer(
             [self.lidar_sub, self.imu_sub],
