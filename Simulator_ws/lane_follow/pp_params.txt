@@ -1,0 +1,2 @@
+Linear Velocity: 0.20 m/s
+Time to complete: 26.89 s

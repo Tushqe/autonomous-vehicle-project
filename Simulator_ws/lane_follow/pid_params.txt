@@ -1,0 +1,5 @@
+Kp: 0.4
+Ki: 0.0
+Kd: 0.05
+Linear Vel: 0.1
+Time to complete: 27.13 seconds
