@@ -17,6 +17,9 @@ class Obstacles(Node):
         self.publisher = self.create_publisher(MarkerArray, 'obstacles', 1)    
         self.subscription = self.create_subscription(LaserScan, '/scan', self.lidar_centroids, 1)
 
+        # =====================================
+        # NEW: Bool publisher for pure pursuit
+        # =====================================
         self.pub_flag = self.create_publisher(Bool, '/front_obstacle', 10)
 
 
@@ -103,6 +106,9 @@ class Obstacles(Node):
         front_centroids.sort(key=lambda x: x[2])
         cx, cy, d = front_centroids[0]
 
+        # =============================
+        # NEW: Publish True (obstacle!)
+        # =============================
         self.pub_flag.publish(Bool(data=True))
 
         # Publish marker for RViz
