@@ -10,7 +10,7 @@ class PerceptionSyncNode(Node):
         self.get_logger().info('Perception Sync Node (LiDAR + IMU) Initialized')
 
         self.lidar_sub = Subscriber(self, LaserScan, '/scan')
-        self.imuz_sub = Subscriber(self, Imu, '/imu')
+        self.imuz_sub = Subscriber(self, Imu, '/sensor/imu/raw')
 
         self.ts = ApproximateTimeSynchronizer(
             [self.lidar_sub, self.imu_sub],
@@ -18,7 +18,6 @@ class PerceptionSyncNode(Node):
             slop=0.05 
         )
         self.ts.registerCallback(self.sync_callback)
-
         self.sync_pub = self.create_publisher(String, '/perception_sync/data', 10)
 
     def sync_callback(self, lidar_msg, imu_msg):

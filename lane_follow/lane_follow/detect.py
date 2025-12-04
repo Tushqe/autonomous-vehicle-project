@@ -22,12 +22,12 @@ class DetectNode(Node):
         
         # Color Ranges for Line Detection in BGR Space ---
         # BGR for Orange
-        self.lower_orange_bgr = np.array([0, 80, 180])  # Complete with appropriate values
-        self.upper_orange_bgr = np.array([80, 180, 255])
+        self.lower_orange_bgr = np.array([0, 20, 60])  # Complete with appropriate values
+        self.upper_orange_bgr = np.array([80, 150, 200])
         
-        # BGR for White (allowing for shadows/gray)
-        self.lower_white_bgr = np.array([180, 180, 180])
-        self.upper_white_bgr = np.array([255, 255, 255])
+        # BGR for black (allowing for shadows/gray)
+        self.lower_black_bgr = np.array([0, 0, 0])
+        self.upper_black_bgr = np.array([180, 255, 80])
 
         # Kernel for morphological operations (for noise reduction)
         self.morph_kernel = np.ones((5, 5), np.uint8)
@@ -39,12 +39,12 @@ class DetectNode(Node):
         self.last_known_lane_width = self.DEFAULT_LANE_WIDTH_PX
 
         # Create Subscriber and Publishers ---
-        self.image_sub = self.create_subscription(Image, '/camera/image_raw', self.image_callback, 10)
+        self.image_sub = self.create_subscription(Image, '/camera/camera/color/image_raw', self.image_callback, 10)
         self.image_pub = self.create_publisher(Image, '/image_processed', 10)
         self.point_pub = self.create_publisher(PointStamped, '/lane_point', 10)
 
         self.get_logger().info('Lane detection node started (using BGR + Memory for sharp turns).')
-
+    
 
     def image_callback(self, msg):
         """
@@ -66,21 +66,21 @@ class DetectNode(Node):
         if self.last_known_lane_width < 600:
             roi_height = int(height * 0.5)  # look higher up if lane is narrow (turn)
         else:
-            roi_height = int(height * 0.2)  # normal
+            roi_height = int(height * 0.5)  # normal
         roi = cv_image[height - roi_height:height, :]
         
         # Detect Lines using OpenCV BGR Masking  and optionally cv2.morphologyEx ---
         mask_orange = cv2.inRange(roi, self.lower_orange_bgr, self.upper_orange_bgr)
-        mask_white = cv2.inRange(roi, self.lower_white_bgr, self.upper_white_bgr)
+        mask_black = cv2.inRange(roi, self.lower_black_bgr, self.upper_black_bgr)
 
         mask_orange = cv2.morphologyEx(mask_orange, cv2.MORPH_OPEN, self.morph_kernel)
         mask_orange = cv2.morphologyEx(mask_orange, cv2.MORPH_CLOSE, self.morph_kernel)
-        mask_white = cv2.morphologyEx(mask_white, cv2.MORPH_OPEN, self.morph_kernel)
-        mask_white = cv2.morphologyEx(mask_white, cv2.MORPH_CLOSE, self.morph_kernel)
+        mask_black = cv2.morphologyEx(mask_black, cv2.MORPH_OPEN, self.morph_kernel)
+        mask_black = cv2.morphologyEx(mask_black, cv2.MORPH_CLOSE, self.morph_kernel)
 
         # Find Centroids ---
-        left_centroid = self.get_centroid(mask_orange)
-        right_centroid = self.get_centroid(mask_white)
+        left_centroid = self.get_centroid(mask_orange,"left",width)
+        right_centroid = self.get_centroid(mask_black, "right", width)
 
         # Convert ROI coordinates to full-image coordinates
         if left_centroid is not None:
@@ -120,9 +120,9 @@ class DetectNode(Node):
         annotated = cv_image.copy()
         cv2.rectangle(annotated, (0, height - roi_height), (width - 1, height - 1), (60, 60, 60), 2)
         if left_centroid:
-            cv2.circle(annotated, left_centroid, 6, (0, 140, 255), -1)
+            cv2.circle(annotated, left_centroid, 6, (0, 255, 0), -1)
         if right_centroid:
-            cv2.circle(annotated, right_centroid, 6, (255, 255, 255), -1)
+            cv2.circle(annotated, right_centroid, 6, (255, 0, 0), -1)
         if lane_center:
             cv2.circle(annotated, lane_center, 8, (0, 0, 255), -1)
 
@@ -133,21 +133,38 @@ class DetectNode(Node):
         self.publish_image(annotated, msg)
 
 
-    # ---------------- Helper functions ---------------- #
-    def get_centroid(self, mask):
-        """Return centroid (x,y) of the largest contour in mask, or None."""
+    # ---------------- Helper functions ---------------- # 
+    def get_centroid(self, mask, side, width):
         contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         if not contours:
             return None
-        largest = max(contours, key=cv2.contourArea)
-        if cv2.contourArea(largest) < 50:
+
+        candidates = []
+        for cnt in contours:
+            area = cv2.contourArea(cnt)
+            if area < 50:
+                continue
+
+            M = cv2.moments(cnt)
+            if M["m00"] == 0:
+                continue
+
+            cx = int(M["m10"] / M["m00"])
+            cy = int(M["m01"] / M["m00"])
+
+            # enforce LEFT or RIGHT half
+            if side == "left" and cx < width // 2:
+                candidates.append((area, (cx, cy)))
+            elif side == "right" and cx >= width // 2:
+                candidates.append((area, (cx, cy)))
+
+        # no valid contours on that side
+        if not candidates:
             return None
-        M = cv2.moments(largest)
-        if M['m00'] == 0:
-            return None
-        cx = int(M['m10'] / M['m00'])
-        cy = int(M['m01'] / M['m00'])
-        return (cx, cy)
+
+        # return largest-area contour centroid from that side
+        candidates.sort(reverse=True)
+        return candidates[0][1]
 
     def publish_point(self, img_msg, x, y, z):
         """Publish a PointStamped message."""
