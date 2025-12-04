@@ -22,10 +22,14 @@ class DetectNode(Node):
         
         # Color Ranges for Line Detection in BGR Space ---
         # BGR for Orange
+        #0,20,60
+        #80,150,200
         self.lower_orange_bgr = np.array([0, 20, 60])  # Complete with appropriate values
-        self.upper_orange_bgr = np.array([80, 150, 200])
+        self.upper_orange_bgr = np.array([80, 150, 220])
         
         # BGR for black (allowing for shadows/gray)
+        #0,0,0
+        #180,255,80
         self.lower_black_bgr = np.array([0, 0, 0])
         self.upper_black_bgr = np.array([180, 255, 80])
 
@@ -39,6 +43,8 @@ class DetectNode(Node):
         self.last_known_lane_width = self.DEFAULT_LANE_WIDTH_PX
 
         # Create Subscriber and Publishers ---
+        #/camera/image_raw
+        #'/camera/camera/color/image_raw'
         self.image_sub = self.create_subscription(Image, '/camera/camera/color/image_raw', self.image_callback, 10)
         self.image_pub = self.create_publisher(Image, '/image_processed', 10)
         self.point_pub = self.create_publisher(PointStamped, '/lane_point', 10)
@@ -66,7 +72,7 @@ class DetectNode(Node):
         if self.last_known_lane_width < 600:
             roi_height = int(height * 0.5)  # look higher up if lane is narrow (turn)
         else:
-            roi_height = int(height * 0.5)  # normal
+            roi_height = int(height * 0.2)  # normal
         roi = cv_image[height - roi_height:height, :]
         
         # Detect Lines using OpenCV BGR Masking  and optionally cv2.morphologyEx ---

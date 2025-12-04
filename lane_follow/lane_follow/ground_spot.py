@@ -1,172 +1,140 @@
 #!/usr/bin/env python3
+
 import rclpy
 from rclpy.node import Node
-from rclpy.duration import Duration
-from sensor_msgs.msg import LaserScan
-from geometry_msgs.msg import Pose, Point, Quaternion, PointStamped
-from visualization_msgs.msg import Marker, MarkerArray
+from sensor_msgs.msg import CameraInfo
+from geometry_msgs.msg import PointStamped, Point
+from tf2_ros.buffer import Buffer
+from tf2_ros.transform_listener import TransformListener
+from tf2_ros import TransformException
+import cv2 as cv
 import numpy as np
+from threading import Lock
+from scipy.spatial.transform import Rotation as R
 
-class Obstacles(Node):
-    def __init__(self, delta_r=0.25, lane_width=1.6):
-        super().__init__('obstacle_detector')
+class GroundSpot(Node):
+    def __init__(self):
+        super().__init__('ground_spot')
 
-        # LiDAR parameters
-        self.delta_r = delta_r
-        self.threshold = 0.25
+        # Create listener for transforms:
+        self.tf_buffer = Buffer()
+        self.tf_listener = TransformListener(self.tf_buffer, self)        
 
-        # Lane parameters
-        self.lane_center_y = 0.0
-        self.lane_width = lane_width
+        # Create publisher for ground spot:
+        self.publisher = self.create_publisher(PointStamped, '/ground_point', 1)    
 
-        # Publishers
-        self.marker_pub = self.create_publisher(MarkerArray, '/in_lane_obstacles', 1)
-        self.target_pub = self.create_publisher(PointStamped, '/pp_target', 1)
+        # Store camera parameters from camera_info topic:
+        self.cam_info_lock = Lock()
+        self.cam_info = None
+        self.cam_info_is_init = False
 
-        # Subscribers
-        self.lidar_sub = self.create_subscription(LaserScan, '/scan', self.lidar_callback, 1)
-        self.lane_sub  = self.create_subscription(PointStamped, '/ground_point', self.update_lane_center, 1)
+        # Future ROS releases may have a wait_for_message which we can use instead of 
+        # a subscription that only needs to be used once:
+        self.sub_cam_info = self.create_subscription(CameraInfo, '/camera/camera_info', self.copy_cam_info, 1)
+        self.sub_cam_info        
 
-        self.get_logger().info("Obstacle detector with lane filtering initialized.")
+        # Convert camera parameters into form usable by OpenCV:
+        self.line_point_is_init = False
+        self.D = None
+        self.K = None
 
-    def update_lane_center(self, msg: PointStamped):
-        """Update lane center position from GroundSpot node."""
-        self.lane_center_y = msg.point.y
+        # Store camera pose
+        self.cam_pose_init = False
+        self.cam_rot = None
+        self.cam_tran = None
 
-    def lidar_callback(self, msg: LaserScan):
-        """Process LiDAR scan and compute obstacle-aware target point."""
-        ranges = np.array(msg.ranges)
-        if len(ranges) == 0:
+        self.sub_line_point = self.create_subscription(PointStamped, '/lane_point', self.calc_ground_spot, 1)
+        self.sub_line_point       
+                 
+
+    def copy_cam_info(self, msg):
+        ''' Callback to read in camera intrinsics from camera_info 
+        '''
+        with self.cam_info_lock:
+            # Only need to copy cam_info once, since fixed-focal length camera
+            if not self.cam_info_is_init:
+                self.cam_info = msg
+                self.cam_info_is_init = True
+                self.get_logger().info('Initialized camera intrinsics')   
+
+    def calc_ground_spot(self, msg):
+        ''' Callback to convert image line_point into ground_point
+        '''
+        if not self.line_point_is_init:
+            # We need to initialize camera intrinsics from cam_info just once:
+            with self.cam_info_lock:
+                if self.cam_info_is_init:
+                    self.D = np.array(self.cam_info.d)
+                    self.K = np.array(self.cam_info.k).reshape( (3,3) )
+                    self.line_point_is_init = True
+        if not self.line_point_is_init:
+            self.get_logger().info('Waiting for camera_info')    
             return
 
-        angles = np.arange(len(ranges)) * msg.angle_increment + msg.angle_min
-        good = np.isfinite(ranges) & (ranges > 0)
-        ranges = ranges[good]
-        angles = angles[good]
-        if len(ranges) == 0:
+        # Initialize camera extrinsics:
+        if not self.cam_pose_init:
+            try:
+                t = self.tf_buffer.lookup_transform(
+                        "base_footprint",
+                        "camera_rgb_optical_frame",
+                        msg.header.stamp)
+            except TransformException as ex:
+                self.get_logger().info(
+                        f'Could not transform camera_rgb_optical_frame to base_footprint: {ex}')
+                return
+            self.cam_rot = R.from_quat([t.transform.rotation.x, t.transform.rotation.y, 
+                                        t.transform.rotation.z, t.transform.rotation.w])
+            self.cam_tran = t.transform.translation
+            self.cam_pose_init = True
+            self.get_logger().info('Initialized camera extrinsics')   
+
+        # We will publish a PointStamped in base_footprint coordinates:
+        out_header = msg.header
+        out_header.frame_id = "base_footprint"
+
+        # test if input point is zeros -- if so then no visible green line
+        # and so publish an all-zero point in base_footprint
+        if msg.point.x==0 and msg.point.y==0:
+            self.publisher.publish( PointStamped(header=out_header) )
             return
 
-        # Convert to Cartesian coordinates
-        x = ranges * np.cos(angles)
-        y = ranges * np.sin(angles)
+        # The following is an implementation from Week 6 Computer Vision and Calibration
+        # See slide 53: What can we do with Extrinsics + Intrinsics
+        # It finds the ground location corresponding to the line_point in the image
 
-        # Cluster points based on distance jumps
-        clusters = []
-        current_cluster = []
-        for i in range(len(ranges)-1):
-            current_cluster.append((x[i], y[i]))
-            if abs(ranges[i+1] - ranges[i]) >= self.threshold:
-                clusters.append(current_cluster)
-                current_cluster = []
-        current_cluster.append((x[-1], y[-1]))
-        if current_cluster:
-            clusters.append(current_cluster)
+        # Get pixel image coordinates:
+        pix = np.array([msg.point.x, msg.point.y]).reshape( (-1,2,1) )  #[N x 2 x 1]
+        # Undistort these to unit focal plane:
+        unit_focal_point = cv.undistortPoints(pix, self.K, self.D, R=None, P=None)
+        # Convert to a vector length 2 for easier indexing:
+        unit_focal_point = unit_focal_point.reshape( (2,) )  
+        # Convert to a length 3 point with z = 1
+        cam_point = np.array([unit_focal_point[0], unit_focal_point[1], 1.])
+        
+        # Next rotate cam_point to base_footprint coordinates using self.cam_rot:
+        nvec = self.cam_rot.apply( cam_point )
+        # Find intersection of this vector that starts at camera origin with the ground plane
+        # Find the scale parameter using the height of camera: self.cam_tran.z, and nvec:
+        # (note, don't name it 'lambda' as that is a Python command)
+        scale_lambda = -self.cam_tran.z / nvec[2]   # How far to scale_lambda z component to hit the ground
+        
+        # Now find the ground point in base_footprint coordinates:
+        # It should be of type: Point
+        ground_point = Point(x=nvec[0] * scale_lambda + self.cam_tran.x,
+                             y=nvec[1] * scale_lambda + self.cam_tran.y,
+                             z=nvec[2] * scale_lambda + self.cam_tran.z ) 
 
-        # Merge first and last clusters if wrap-around
-        if len(clusters) > 1 and abs(ranges[0] - ranges[-1]) < self.threshold:
-            clusters[0] = clusters[-1] + clusters[0]
-            clusters.pop(-1)
+        # Create a PointStamped containing this point along with the header: out_header
+        # Publish the point as a PointStamped in base_footprint:
+        ground_spot = PointStamped(header=out_header,point=ground_point)
+        
+        # Publish the ground spot
+        self.publisher.publish( ground_spot)
 
-        # Compute cluster centroids
-        xcen_list, ycen_list = [], []
-        for cluster in clusters:
-            if len(cluster) == 0:
-                continue
-            x_coords = [p[0] for p in cluster]
-            y_coords = [p[1] for p in cluster]
-            xcen_list.append(np.mean(x_coords))
-            ycen_list.append(np.mean(y_coords))
-
-        # Filter centroids within lane boundaries
-        in_lane_points = []
-        ids = []
-        for i, (xc, yc) in enumerate(zip(xcen_list, ycen_list)):
-            if abs(yc - self.lane_center_y) <= self.lane_width/2:
-                in_lane_points.append((xc, yc, 0.0))
-                ids.append(i)
-
-        # Publish visualization markers
-        self.publish_markers(in_lane_points, ids, msg.header)
-
-        # -------- Determine target point for pure pursuit --------
-        # If no obstacle → target is lane center
-        if not in_lane_points:
-            target_point = PointStamped()
-            target_point.header = msg.header
-            target_point.point.x = 2.0  # arbitrary lookahead in x
-            target_point.point.y = self.lane_center_y
-            target_point.point.z = 0.0
-            self.target_pub.publish(target_point)
-            return
-
-        # Find closest cluster ahead (positive x)
-        in_lane_points.sort(key=lambda p: p[0])  # sort by x
-        obs_x, obs_y, _ = in_lane_points[0]
-
-        # Safety threshold: start avoiding if obstacle within 2 meters
-        SAFETY_X = 2.0
-        if obs_x > SAFETY_X:
-            # far enough → keep lane
-            target_point = PointStamped()
-            target_point.header = msg.header
-            target_point.point.x = 2.0
-            target_point.point.y = self.lane_center_y
-            target_point.point.z = 0.0
-            self.target_pub.publish(target_point)
-            return
-
-        # Determine closest lane edge
-        left_edge  = self.lane_center_y + self.lane_width/2
-        right_edge = self.lane_center_y - self.lane_width/2
-
-        dist_left  = abs(obs_y - left_edge)
-        dist_right = abs(obs_y - right_edge)
-
-        if dist_left < dist_right:
-            # obstacle closer to left → bypass on right
-            bypass_y = right_edge + 0.3
-        else:
-            # obstacle closer to right → bypass on left
-            bypass_y = left_edge - 0.3
-
-        # Publish new target
-        target_point = PointStamped()
-        target_point.header = msg.header
-        target_point.point.x = obs_x + 0.8  # go slightly past obstacle
-        target_point.point.y = bypass_y
-        target_point.point.z = 0.0
-        self.target_pub.publish(target_point)
-
-    def publish_markers(self, points, ids, header):
-        ma = MarkerArray()
-        for i, p in zip(ids, points):
-            mark = Marker()
-            mark.header = header
-            mark.id = i
-            mark.type = Marker.SPHERE
-            mark.pose = Pose(position=Point(x=p[0], y=p[1], z=p[2]),
-                             orientation=Quaternion(x=0., y=0., z=0., w=1.))
-            mark.scale.x = 0.25
-            mark.scale.y = 0.25
-            mark.scale.z = 0.25
-            mark.color.a = 0.8
-            mark.color.r = 1.0
-            mark.color.g = 0.3
-            mark.color.b = 0.3
-            mark.lifetime = Duration(seconds=0.5).to_msg()
-            ma.markers.append(mark)
-        self.marker_pub.publish(ma)
 
 def main(args=None):
-    rclpy.init(args=args)
-    node = Obstacles()
-    try:
-        rclpy.spin(node)
-    except KeyboardInterrupt:
-        pass
-    finally:
-        node.destroy_node()
-        rclpy.shutdown()
 
-if __name__ == '__main__':
-    main()
+    rclpy.init(args=args)
+    node = GroundSpot()
+    rclpy.spin(node) 
+
